@@ -4,8 +4,12 @@
 文件说明：
 
 """
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 import tensorflow as tf
-from tensorflow.keras.layers import Conv2D, Subtract, Conv2DTranspose, Input
+from tensorflow.keras.layers import Conv2D, Subtract, Conv2DTranspose, Input, \
+    AveragePooling2D, BatchNormalization, Activation, UpSampling2D, Concatenate, \
+    GlobalAveragePooling2D
 from tensorflow.keras.models import Model
 import tensorflow.keras.backend as K
 from tensorflow.keras.losses import binary_crossentropy
@@ -30,6 +34,27 @@ def F1_score(y_true, y_pred):
     return 2 * P * R / (R + P)
 
 
+def PA(y_true, y_pred):
+    y_true = tf.cast(y_true, tf.int32)
+
+    y_pred = tf.argmax(y_pred, axis=-1)
+    y_pred = tf.expand_dims(y_pred, axis=-1)
+    y_pred = tf.cast(y_pred, tf.int32)
+
+    TP = tf.reduce_sum(tf.cast(y_true * y_pred, tf.int32))
+    TN = tf.reduce_sum(tf.cast((1 - y_true) * (1 - y_pred), tf.int32))
+    FP = tf.reduce_sum(tf.cast((1 - y_true) * y_pred, tf.int32))
+    FN = tf.reduce_sum(tf.cast(y_true * (1 - y_pred), tf.int32))
+
+    TP = tf.cast(TP, tf.float32)
+    TN = tf.cast(TN, tf.float32)
+    FP = tf.cast(FP, tf.float32)
+    FN = tf.cast(FN, tf.float32)
+
+    PA = (TP + TN) / (TP + TN + FP + FN + K.epsilon())
+    return PA
+
+
 def ce_dice_loss(y_true, y_pred):
     # binary_crossentropy L=-[y_true * log(y_pred)+(1-y_true)*log(1 - y_pred)]
     ce_loss = binary_crossentropy(y_true, y_pred)
@@ -40,6 +65,52 @@ def ce_dice_loss(y_true, y_pred):
     # K.epsilon() = 1e-07 防止分母为零
     loss = ce_loss + dice_loss
     return loss
+
+
+def psp_modele(input_x, filters_nums=512, k_size=1):
+    # 金字塔池化 Pyramid Scene Parsing Network
+    _, _, c, _ = input_x.shape
+
+    poolsize = [8, 4, 2, 1]
+    # print(input_x.shape)
+    # 6
+    x_c1 = AveragePooling2D(pool_size=c // poolsize[0], name='ave_c1')(input_x)
+    x_c1 = Conv2D(filters=filters_nums, kernel_size=k_size, strides=1, padding='same', name='conv_c1')(x_c1)
+    x_c1 = BatchNormalization(momentum=0.95, axis=-1)(x_c1)
+    x_c1 = Activation(activation='relu')(x_c1)
+    x_c1 = UpSampling2D(size=(c // poolsize[0], c // poolsize[0]), name='up_c1')(x_c1)
+    # print(x_c1.shape)
+
+    # 3
+    x_c2 = AveragePooling2D(pool_size=c // poolsize[1], name='ave_c2')(input_x)
+    x_c2 = Conv2D(filters=filters_nums, kernel_size=k_size, strides=1, padding='same', name='conv_c2')(x_c2)
+    x_c2 = BatchNormalization(momentum=0.95, axis=-1)(x_c2)
+    x_c2 = Activation(activation='relu')(x_c2)
+    x_c2 = UpSampling2D(size=(c // poolsize[1], c // poolsize[1]), name='up_c2')(x_c2)
+    # print(x_c2.shape)
+
+    # 2
+    x_c3 = AveragePooling2D(pool_size=c // poolsize[2], name='ave_c3')(input_x)
+    x_c3 = Conv2D(filters=filters_nums, kernel_size=k_size, strides=1, padding='same', name='conv_c3')(x_c3)
+    x_c3 = BatchNormalization(momentum=0.95, axis=-1)(x_c3)
+    x_c3 = Activation(activation='relu')(x_c3)
+    x_c3 = UpSampling2D(size=(c // poolsize[2], c // poolsize[2]), name='up_c3')(x_c3)
+    # print(x_c3.shape)
+
+    # 1
+    x_c4 = GlobalAveragePooling2D(name='glob1')(input_x)
+    x_c4 = tf.reshape(x_c4, (-1, 1, 1, filters_nums))
+    x_c4 = Conv2D(filters=filters_nums, kernel_size=k_size, strides=1, padding='same', name='conv_c4')(x_c4)
+    x_c4 = BatchNormalization(momentum=0.95, axis=-1)(x_c4)
+    x_c4 = Activation(activation='relu')(x_c4)
+    x_c4 = UpSampling2D(size=(c, c), name='up_c4')(x_c4)
+    # print(x_c4.shape)
+
+    x = Concatenate(axis=-1, name='concat')([input_x, x_c1, x_c2, x_c3, x_c4])
+    x = Conv2D(filters=filters_nums, kernel_size=3, name='conv_c6', padding='same')(x)
+    x = BatchNormalization(momentum=0.95, axis=-1)(x)
+    x = Activation(activation='relu')(x)
+    return x
 
 
 def res_conv_block(input_tensor, kernel_num, name_num):
@@ -73,7 +144,10 @@ def res_feature_extract(input_tensor=(512, 512, 3), kernel_num=64):
     pool_3 = Conv2D(4 * kernel_num, (1, 1), strides=2, name='pool_3')(layer_3)
 
     layer_4 = res_conv_block(pool_3, 8 * kernel_num, name_num=4)
-    feature_4 = layer_4 = res_conv_block(layer_4, 8 * kernel_num, name_num=5)
+    layer_4 = res_conv_block(layer_4, 8 * kernel_num, name_num=5)
+
+    # psp
+    feature_4 = layer_4 = psp_modele(layer_4)
     net = Conv2D(8 * kernel_num, (1, 1), strides=2, name='pool_4')(layer_4)
 
     # feature_5 = layer_5 = res_conv_block(pool_4, 16 * kernel_num, name_num=5)
