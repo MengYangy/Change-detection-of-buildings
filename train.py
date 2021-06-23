@@ -1,5 +1,5 @@
 import tensorflow as tf
-from Nets.CDModel import get_model, ce_dice_loss, Recall, F1_score, Precision
+from Nets.CDModel import get_model, ce_dice_loss, Recall, F1_score, Precision, PA
 from utili.generate_data import get_data, load_data, generate_train_val_data
 import numpy as np
 import cv2 as cv
@@ -25,7 +25,7 @@ learning_rate_fn = tf.keras.optimizers.schedules.InverseTimeDecay(initial_learni
 model = get_model()
 model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate_fn),
               loss=ce_dice_loss,
-              metrics=['accuracy', Recall, Precision, F1_score])
+              metrics=['accuracy', PA])
 model.summary()
 
 
